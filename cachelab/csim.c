@@ -6,6 +6,7 @@
 #include <string.h>
 
 typedef unsigned int uint;
+typedef unsigned long  ulong;
 struct cache_param
 {
 	int s, S;
@@ -14,21 +15,19 @@ struct cache_param
 	//int m, t; //t=m-s-b;
 	int C;
 } ;
-struct row
-{
-	int valid;
-	int tag;
-	char* block;
-};
-struct set
-{
-	struct row *rows;
-};
+
 struct cache_sim
 {
 	char* bdata;//block data, size: S*E*B
 	char* valid;//valid bit, size: S*E;
 	uint* tag;//tag, size: S*E
+	uint* count;//reference count, size: S*E
+};
+struct result
+{
+	int miss;
+	int hit;
+	int eviction;
 };
 void usage(char* argv0)
 {
@@ -43,6 +42,7 @@ int cache_sim_alloc(struct cache_sim* cache, struct cache_param* param)
 	cache->bdata = (char*)calloc(n, sizeof(char));
 	cache->valid = (char*)calloc(param->S * param->E, sizeof(char));
 	cache->tag = (uint*)calloc(param->S * param->E, sizeof(uint));
+	cache->count = (uint*)calloc(param->S * param->E, sizeof(uint));
 
 	return 0;
 }
@@ -55,55 +55,97 @@ void cache_sim_free(struct cache_sim* cache)
 		free(cache->valid);
 	if (cache->tag)
 		free(cache->tag);
+	if (cache->count)
+		free(cache->count);
 
 	return;
 }
 
-void process(char* instruction, 
-	uint addr, 
-	int len, 
+void process(char* instruction,
+	uint addr,
+	int len,
 	struct cache_param* param,
-	struct cache_sim* cache)
+	struct cache_sim* cache,
+	struct result *res)
 {
 	/* addr: [tag][set][block] */
 	uint addr_t;
 	uint addr_s;
-	uint addr_b;
+	//uint addr_b;
 
 	/*1. splite address */
 	
-	addr_b =( addr << (32 - param->b)) >> (32 - param->b);
+	//addr_b =( addr << (32 - param->b)) >> (32 - param->b);
 	addr = addr >> (param->b);
 	addr_s = (addr << (32 - param->s)) >> (32 - param->s);
 	addr = addr >> (param->s);
 	addr_t = addr;
-	printf("t=0x%x, s=0x%x, b=0x%x\n", addr_t, addr_s, addr_b);
+	//printf("t=0x%x, s=0x%x, b=0x%x\n", addr_t, addr_s, addr_b);
 
 	/*2. We know S and E, check valid for each block(total E) */
+
+	/*2.1 update reference count for all rows */
+	for (int addr_e = 0; addr_e < param->E; addr_e++)
+	{
+		uint  *count = &(cache->count[addr_s * param->E + addr_e]);
+		(*count)++;
+	}
+
+	/*2.2 hit */
 	for (int addr_e = 0; addr_e < param->E; addr_e++)
 	{
 		char *pvalid=&(cache->valid[addr_s * param->E + addr_e]);
 		uint  *tag = &(cache->tag[addr_s * param->E + addr_e]);
+		uint  *count = &(cache->count[addr_s * param->E + addr_e]);
 
+		(*count)++;
 		if (*pvalid == 1 && *tag == addr_t)
 		{
-				printf("hit\n");
+				(res->hit)++;
+				*count = 0;
+				printf("hit ");
+				return;
 		}
-		else
-		{
-			printf("miss\n");
-			/* fetch */
-			*pvalid = 1;
-			*tag = addr_t;
-		}
+	}
+	
 
+	/*2.3 miss */
+	printf("miss ");
+	(res->miss)++;
+	for (int addr_e = 0; addr_e < param->E; addr_e++)
+	{
+		char *pvalid = &(cache->valid[addr_s * param->E + addr_e]);
+		uint  *tag = &(cache->tag[addr_s * param->E + addr_e]);
+		uint  *count = &(cache->count[addr_s * param->E + addr_e]);
+		if (*pvalid == 0)
+		{
+			*count = 0;
+			*tag = addr_t;
+			*pvalid = 1;
+			return;
+		}
 	}
 
-	
-	
+	/*2.4 eviciton, find LRU( least recently used ) row*/
+	printf("eviction ");
+	(res->eviction)++;
+	int addr_e_lru = 0;
+	int count_max= cache->count[addr_s * param->E + 0];
+	for (int addr_e = 0; addr_e < param->E; addr_e++)
+	{
+		uint  *count = &(cache->count[addr_s * param->E + addr_e]);
+		if (*count > count_max)
+		{
+			count_max = *count;
+			addr_e_lru = addr_e;
+		}
+	}
+	cache->valid[addr_s * param->E + addr_e_lru] = 1;
+	cache->tag[addr_s * param->E + addr_e_lru] = addr_t;
+	cache->count[addr_s * param->E + addr_e_lru] = 0;
 
 }
-void scan_file(FILE *fp, struct cache_param* param)
+void scan_file(FILE *fp, struct cache_param* param, struct result* res)
 {
 	char instruction[256];
 	uint addr;
@@ -124,14 +166,16 @@ void scan_file(FILE *fp, struct cache_param* param)
 	*/
 		memset(instruction, 0, sizeof(instruction));
 		fscanf(fp, " %s %x,%d\n", instruction, &addr, &len);
-		printf("instruction=%s,addr=0x%x,len=%d\n", instruction, addr, len);
+		printf(" %s %8x,%1d ", instruction, addr, len);
 
-		process(instruction, addr, len, param, &cache);
+		process(instruction, addr, len, param, &cache, res);
 		if (instruction[0] == 'M')
 		{
 			/*process again for the same address*/
-			process(instruction, addr, len, param, &cache);
+			process(instruction, addr, len, param, &cache, res);
 		}
+		printf("\n");
+
 	}
 
 
@@ -212,11 +256,12 @@ int main(int argc, char** argv)
 	char filename[256];
 	struct  cache_param param;
 	FILE *fp;
-
+	struct result res;
 		
 	fp = NULL;
 	memset(filename, 0, sizeof(filename));
 	memset(&param, 0, sizeof(param));
+	memset(&res, 0, sizeof(res));
 
 	/*0. parse command line parameters */
 	parse_cmd(argc, argv, &param, filename);
@@ -229,12 +274,13 @@ int main(int argc, char** argv)
 		printf("can not open file %s\n", filename);
 		exit(EXIT_FAILURE);
 	}
-	/*2. process trace file */
-	scan_file(fp, &param);
+
+	/*2. scan_file trace file */
+	scan_file(fp, &param, &res);
 
 	/*3. close trace file */
 	fclose(fp);
 	
-    printSummary(0, 0, 0);
+    printSummary(res.hit, res.miss, res.eviction);
     return 0;
 }
