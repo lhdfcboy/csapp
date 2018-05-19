@@ -1,0 +1,32 @@
+PartA csim.c
+要求是对cache行为进行模拟。
+完成了所有功能并通过测试。
+主要任务点：
+1.对命令行参数进行解析和提取。
+2.计算cache的衍生参数。
+3.用fscanf读取trace文件。
+4.通过位运算提取每个地址中的 tag set_index block_offset 段。
+5.根据地址中的t s b参数查找cache，统计miss hit eviction情况。
+6.eviction要通过LRU(leat recently used)算法，判断驱逐哪个行。
+
+难点：
+1.cache的建模，因为cache参数是变的，无法用数组来表示。想到的办法是只对里面的变量
+建模，不建模完整的结构。cache中tag valid是二维的，大小是S*E，block也就是实际存储
+是三维的，大小是S*E*B。完成实验后发现，block根本用不着，因为只是模拟地址的变化，不
+会拷贝实际内容。
+2.LRU算法。LRU是在所有的cache row中，找一最久没有被引用过的行。实现原理是，对每个行，
+增加一个状态变量count（与tag valid 地位等同），每次查
+找cache，都对所有的行的count加一，如果某个行被hit或miss了，就对改行的count清零。
+需要计算LRU时，找所有行中count最大的那个，说明这个行很久没有被引用过了。
+
+PartB trans.c
+要求是对3中不同size的矩阵的转置操作进行优化。
+2个提示：
+a.采用分块的方法
+b.因为E=1，是直接映射高速缓存，因此要考虑不命中冲突的情况，尤其是矩阵的对角线元素的访问。
+
+完成情况：
+只完成了分块，只对32*32的矩阵有效果，从misses:1183优化到misses:343。
+不命中冲突是会出现的，因为cache的大小是1024 bytes，而A和B的总大小是8192 bytes，cache无法存储完整的A和B，
+A和B的某些地址会映射到同一个cache row，这是就会发生eviction。书上的解决方案是改变数组B的地址，对于这个题目，
+显然B是已经分配好的。
